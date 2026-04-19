@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { sendMessage } from "@/lib/ai/chat";
@@ -228,18 +228,23 @@ export async function POST(request: Request) {
   await upsertLead(supabase, conversation.id, botResponse, newScore);
 
   if (justQualified && bot.handoff_email) {
-    void notifyHandoff({
-      to: bot.handoff_email,
-      botName: bot.name,
-      orgName: org.name,
-      conversationId: conversation.id,
-      baseUrl: serverOrigin,
-      leadData: mergedData,
-      score: newScore,
-      actionPayload: botResponse.action_payload,
-    }).catch((err) =>
-      console.error("[api/chat] handoff email failed", err)
-    );
+    const handoffEmail = bot.handoff_email;
+    after(async () => {
+      try {
+        await notifyHandoff({
+          to: handoffEmail,
+          botName: bot.name,
+          orgName: org.name,
+          conversationId: conversation.id,
+          baseUrl: serverOrigin,
+          leadData: mergedData,
+          score: newScore,
+          actionPayload: botResponse.action_payload,
+        });
+      } catch (err) {
+        console.error("[api/chat] handoff email failed", err);
+      }
+    });
   }
 
   return json(

@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 
 import { sendMessage } from "@/lib/ai/chat";
 import type { ChatMessage } from "@/lib/ai/types";
@@ -40,11 +40,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  // Meta expects 200 OK within ~20s, otherwise it retries. We fire-and-forget
-  // the processing but respond fast.
-  void processPayload(payload).catch((err) =>
-    console.error("[whatsapp/webhook] processing error", err)
-  );
+  // Meta expects 200 OK within ~20s, otherwise it retries. Use after() so the
+  // async processing survives the serverless function returning a response.
+  // Plain `void promise.catch(...)` is killed in Vercel when the function ends.
+  after(async () => {
+    try {
+      await processPayload(payload);
+    } catch (err) {
+      console.error("[whatsapp/webhook] processing error", err);
+    }
+  });
 
   return NextResponse.json({ received: true });
 }
