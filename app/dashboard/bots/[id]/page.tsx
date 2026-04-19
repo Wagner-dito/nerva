@@ -6,6 +6,7 @@ import { BotForm, type BotFormValues } from "@/app/dashboard/bots/bot-form";
 import { DeleteBotButton } from "@/app/dashboard/bots/[id]/delete-button";
 import { NICHE_LABELS } from "@/app/dashboard/bots/niches";
 import { createClient } from "@/lib/supabase/server";
+import { getBaseUrl } from "@/lib/url";
 
 export default async function EditBotPage({
   params,
@@ -26,6 +27,8 @@ export default async function EditBotPage({
   if (!bot) {
     notFound();
   }
+
+  const baseUrl = await getBaseUrl();
 
   const initialValues: BotFormValues = {
     name: bot.name,
@@ -72,7 +75,7 @@ export default async function EditBotPage({
         <p className="mt-1 font-mono text-sm text-foreground">{bot.id}</p>
       </section>
 
-      <EmbedSnippet botId={bot.id} />
+      <EmbedSnippet botId={bot.id} baseUrl={baseUrl} />
 
       <BotForm mode="edit" botId={bot.id} initialValues={initialValues} />
 
@@ -94,8 +97,14 @@ function questionsToText(value: unknown): string {
   return value.filter((v): v is string => typeof v === "string").join("\n");
 }
 
-function EmbedSnippet({ botId }: { botId: string }) {
-  const snippet = `<script\n  src="SEU_DOMINIO/widget.js"\n  data-bot-id="${botId}"\n  defer\n></script>`;
+function EmbedSnippet({
+  botId,
+  baseUrl,
+}: {
+  botId: string;
+  baseUrl: string;
+}) {
+  const snippet = `<script\n  src="${baseUrl}/widget.js"\n  data-bot-id="${botId}"\n  defer\n></script>`;
   return (
     <section className="space-y-3 rounded-xl border border-border/60 bg-card/40 p-4">
       <div>
@@ -104,8 +113,8 @@ function EmbedSnippet({ botId }: { botId: string }) {
         </p>
         <p className="mt-1 text-sm text-muted-foreground">
           Cole este snippet antes de <code>&lt;/body&gt;</code> no site do
-          cliente. Troque <code>SEU_DOMINIO</code> pela URL onde o Nerva está
-          hospedado (em dev: <code>http://localhost:3000</code>).
+          cliente. O widget aponta direto pra este domínio — não precisa
+          ajustar nada.
         </p>
       </div>
       <pre className="overflow-x-auto rounded-md border border-border/60 bg-background/60 p-3 font-mono text-xs text-foreground">
