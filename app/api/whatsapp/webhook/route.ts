@@ -305,19 +305,29 @@ function toJson(v: unknown): Json {
   return JSON.parse(JSON.stringify(v)) as Json;
 }
 
+const SLOT_FETCH_TIMEOUT_MS = 3000;
+
 async function fetchSlotsIfConfigured(bot: {
   google_refresh_token: string | null;
   google_calendar_id: string | null;
 }): Promise<AvailableSlot[] | undefined> {
   if (!bot.google_refresh_token || !bot.google_calendar_id) return undefined;
   try {
-    return await listAvailableSlots({
-      refreshToken: bot.google_refresh_token,
-      calendarId: bot.google_calendar_id,
-      max: 5,
-    });
+    return await Promise.race<AvailableSlot[] | undefined>([
+      listAvailableSlots({
+        refreshToken: bot.google_refresh_token,
+        calendarId: bot.google_calendar_id,
+        max: 5,
+      }),
+      new Promise<undefined>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("calendar_timeout")),
+          SLOT_FETCH_TIMEOUT_MS
+        )
+      ),
+    ]);
   } catch (err) {
-    console.error("[whatsapp/webhook] listAvailableSlots failed", err);
+    console.warn("[whatsapp/webhook] slots fetch skipped:", err);
     return undefined;
   }
 }

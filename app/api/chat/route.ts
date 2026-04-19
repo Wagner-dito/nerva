@@ -323,19 +323,29 @@ function asString(v: unknown): string | null {
   return t.length > 0 ? t : null;
 }
 
+const SLOT_FETCH_TIMEOUT_MS = 3000;
+
 async function fetchSlotsIfConfigured(bot: {
   google_refresh_token: string | null;
   google_calendar_id: string | null;
 }): Promise<AvailableSlot[] | undefined> {
   if (!bot.google_refresh_token || !bot.google_calendar_id) return undefined;
   try {
-    return await listAvailableSlots({
-      refreshToken: bot.google_refresh_token,
-      calendarId: bot.google_calendar_id,
-      max: 5,
-    });
+    return await Promise.race<AvailableSlot[] | undefined>([
+      listAvailableSlots({
+        refreshToken: bot.google_refresh_token,
+        calendarId: bot.google_calendar_id,
+        max: 5,
+      }),
+      new Promise<undefined>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("calendar_timeout")),
+          SLOT_FETCH_TIMEOUT_MS
+        )
+      ),
+    ]);
   } catch (err) {
-    console.error("[api/chat] listAvailableSlots failed", err);
+    console.warn("[api/chat] slots fetch skipped:", err);
     return undefined;
   }
 }
