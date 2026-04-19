@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 
 import { BotForm, type BotFormValues } from "@/app/dashboard/bots/bot-form";
+import { CalendarCard } from "@/app/dashboard/bots/[id]/calendar-card";
 import { DeleteBotButton } from "@/app/dashboard/bots/[id]/delete-button";
 import { NICHE_LABELS } from "@/app/dashboard/bots/niches";
 import { createClient } from "@/lib/supabase/server";
@@ -10,16 +11,22 @@ import { getBaseUrl } from "@/lib/url";
 
 export default async function EditBotPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{
+    google_connected?: string;
+    google_error?: string;
+  }>;
 }) {
   const { id } = await params;
+  const sp = await searchParams;
 
   const supabase = await createClient();
   const { data: bot } = await supabase
     .from("bots")
     .select(
-      "id, name, niche, persona, knowledge_base, qualification_questions, widget_color, widget_greeting, widget_position, allowed_origins, handoff_email, follow_up_enabled, whatsapp_phone_number_id, whatsapp_access_token"
+      "id, name, niche, persona, knowledge_base, qualification_questions, widget_color, widget_greeting, widget_position, allowed_origins, handoff_email, follow_up_enabled, whatsapp_phone_number_id, whatsapp_access_token, google_refresh_token"
     )
     .eq("id", id)
     .maybeSingle();
@@ -76,6 +83,13 @@ export default async function EditBotPage({
       </section>
 
       <EmbedSnippet botId={bot.id} baseUrl={baseUrl} />
+
+      <CalendarCard
+        botId={bot.id}
+        connected={Boolean(bot.google_refresh_token)}
+        flashSuccess={sp.google_connected === "1"}
+        flashError={sp.google_error}
+      />
 
       <BotForm mode="edit" botId={bot.id} initialValues={initialValues} />
 
