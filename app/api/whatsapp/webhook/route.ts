@@ -17,9 +17,8 @@ import {
   type WhatsAppWebhookPayload,
 } from "@/lib/whatsapp/client";
 
-// Edge runtime gives us 25s on Hobby (vs 10s Node), enough headroom for
-// cold start + Calendar fetch + Gemini + Meta send end-to-end.
-export const runtime = "edge";
+// maxDuration só vira real no plano Pro (60s). Hobby ignora mas não quebra.
+export const maxDuration = 60;
 
 const INITIAL_SCORE = 30;
 const HISTORY_LIMIT = 20;
