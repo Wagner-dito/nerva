@@ -47,6 +47,11 @@ export type ConversationContext = {
     endISO: string;
     humanLabel: string;
   }>;
+  already_booked?: {
+    startISO: string;
+    endISO: string;
+    humanLabel: string;
+  };
 };
 
 export type ChatMessage = {

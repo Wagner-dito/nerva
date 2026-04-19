@@ -270,6 +270,22 @@ export async function createEvent(params: {
   }
 }
 
+export function slotLabel(startISO: string): string {
+  const d = new Date(startISO);
+  const dayStr = d.toLocaleDateString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "short",
+    day: "2-digit",
+    month: "2-digit",
+  });
+  const timeStr = d.toLocaleTimeString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `${dayStr} ${timeStr}`;
+}
+
 // Heuristic: skip Calendar fetch when user's message is unlikely to need
 // scheduling info. Saves ~2-3s on greetings and acks.
 export function userMightSchedule(

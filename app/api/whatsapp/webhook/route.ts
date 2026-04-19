@@ -7,6 +7,7 @@ import { serverEnv } from "@/lib/env.server";
 import {
   createEvent,
   listAvailableSlots,
+  slotLabel,
   userMightSchedule,
   type AvailableSlot,
 } from "@/lib/google/calendar";
@@ -197,11 +198,14 @@ async function handleIncoming(
     content: args.messageText,
   });
 
-  const slots = await fetchSlotsIfConfigured(
-    args.bot,
-    args.messageText,
-    history.length + 1
-  );
+  const alreadyBooked = extractBookedInfo(extractedSoFar);
+  const slots = alreadyBooked
+    ? undefined
+    : await fetchSlotsIfConfigured(
+        args.bot,
+        args.messageText,
+        history.length + 1
+      );
 
   const botResponse = await sendMessage({
     bot: {
@@ -219,10 +223,25 @@ async function handleIncoming(
       current_score: conversation.temperature,
       channel: "whatsapp",
       available_slots: slots,
+      already_booked: alreadyBooked ?? undefined,
     },
     history,
     userMessage: args.messageText,
   });
+
+  let bookedInfo: BookedInfo | null = alreadyBooked;
+  if (
+    botResponse.action === "book_slot" &&
+    !alreadyBooked &&
+    args.bot.google_refresh_token &&
+    args.bot.google_calendar_id
+  ) {
+    bookedInfo = await bookSlotFromAction(
+      args.bot.google_refresh_token,
+      args.bot.google_calendar_id,
+      botResponse
+    );
+  }
 
   // Prioridade #1: mandar a mensagem pro visitante. Se a função serverless
   // for morta antes das operações de DB, pelo menos o usuário recebe.
@@ -238,10 +257,13 @@ async function handleIncoming(
     0,
     100
   );
-  const mergedData = {
+  const mergedData: Record<string, unknown> = {
     ...extractedSoFar,
     ...stripEmpty(botResponse.extracted_data),
   };
+  if (bookedInfo) {
+    mergedData.__booked = bookedInfo;
+  }
 
   const newStatus =
     botResponse.action === "end_conversation"
@@ -349,18 +371,43 @@ async function fetchSlotsIfConfigured(
   }
 }
 
+type BookedInfo = {
+  startISO: string;
+  endISO: string;
+  humanLabel: string;
+  eventId?: string;
+};
+
+function extractBookedInfo(
+  extracted: Record<string, unknown>
+): BookedInfo | null {
+  const raw = extracted.__booked;
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const startISO = asStr(r.startISO);
+  const endISO = asStr(r.endISO);
+  const humanLabel = asStr(r.humanLabel);
+  if (!startISO || !endISO || !humanLabel) return null;
+  return {
+    startISO,
+    endISO,
+    humanLabel,
+    eventId: asStr(r.eventId) ?? undefined,
+  };
+}
+
 async function bookSlotFromAction(
   refreshToken: string,
   calendarId: string,
   response: BotResponse
-): Promise<void> {
+): Promise<BookedInfo | null> {
   const p = response.action_payload;
-  if (!p) return;
+  if (!p) return null;
   const start = asStr(p.start);
   const end = asStr(p.end);
   const summary = asStr(p.summary) ?? "Agendamento Nerva";
   const description = asStr(p.description) ?? undefined;
-  if (!start || !end) return;
+  if (!start || !end) return null;
 
   try {
     const result = await createEvent({
@@ -373,9 +420,17 @@ async function bookSlotFromAction(
     });
     if (!result.ok) {
       console.error("[whatsapp/webhook] createEvent failed", result.error);
+      return null;
     }
+    return {
+      startISO: start,
+      endISO: end,
+      humanLabel: slotLabel(start),
+      eventId: result.eventId,
+    };
   } catch (err) {
     console.error("[whatsapp/webhook] createEvent threw", err);
+    return null;
   }
 }
 

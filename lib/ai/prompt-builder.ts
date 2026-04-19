@@ -112,7 +112,23 @@ function buildRuntimePrompt(conv: ConversationContext): string {
     lines.push(conv.suggested_next_step.trim());
   }
 
-  if (conv.available_slots && conv.available_slots.length > 0) {
+  if (conv.already_booked) {
+    lines.push("", "# AGENDAMENTO JÁ CRIADO NESSA CONVERSA");
+    lines.push(
+      `Já existe um evento confirmado na agenda pra ${conv.already_booked.humanLabel}.`
+    );
+    lines.push(
+      "NÃO use action='book_slot' de novo — vai criar duplicata na agenda.",
+      "Se o visitante confirmou/agradeceu, use action='continue' com uma resposta curta e cordial.",
+      "Se o visitante pedir pra REMARCAR ou CANCELAR, use action='request_handoff' com urgency='medium' — Dra Sandy resolve manualmente."
+    );
+  }
+
+  if (
+    !conv.already_booked &&
+    conv.available_slots &&
+    conv.available_slots.length > 0
+  ) {
     lines.push("", "# AGENDAMENTO — HORÁRIOS DISPONÍVEIS");
     lines.push(
       "Estes são slots livres na agenda do cliente pros próximos dias. Use SÓ estes."
