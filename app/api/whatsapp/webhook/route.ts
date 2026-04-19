@@ -318,7 +318,7 @@ async function fetchSlotsIfConfigured(bot: {
       listAvailableSlots({
         refreshToken: bot.google_refresh_token,
         calendarId: bot.google_calendar_id,
-        max: 5,
+        max: 30,
       }),
       new Promise<undefined>((_, reject) =>
         setTimeout(
