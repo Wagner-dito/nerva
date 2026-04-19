@@ -213,17 +213,14 @@ async function handleIncoming(
     userMessage: args.messageText,
   });
 
-  if (
-    botResponse.action === "book_slot" &&
-    args.bot.google_refresh_token &&
-    args.bot.google_calendar_id
-  ) {
-    await bookSlotFromAction(
-      args.bot.google_refresh_token,
-      args.bot.google_calendar_id,
-      botResponse
-    );
-  }
+  // Prioridade #1: mandar a mensagem pro visitante. Se a função serverless
+  // for morta antes das operações de DB, pelo menos o usuário recebe.
+  const sendResult = await sendWhatsAppText({
+    phoneNumberId: args.phoneNumberId,
+    accessToken: args.accessToken,
+    to: args.visitorId,
+    body: botResponse.message,
+  });
 
   const newScore = clamp(
     conversation.temperature + botResponse.lead_score_delta,
@@ -234,12 +231,6 @@ async function handleIncoming(
     ...extractedSoFar,
     ...stripEmpty(botResponse.extracted_data),
   };
-
-  await supabase.from("messages").insert({
-    conversation_id: conversation.id,
-    role: "assistant",
-    content: botResponse.message,
-  });
 
   const newStatus =
     botResponse.action === "end_conversation"
@@ -253,23 +244,33 @@ async function handleIncoming(
       ? { follow_up_count: 0, last_follow_up_at: null }
       : {};
 
-  await supabase
-    .from("conversations")
-    .update({
-      temperature: newScore,
-      lead_data: toJson(mergedData),
-      status: newStatus,
-      ...resetFollowUp,
-    })
-    .eq("id", conversation.id);
+  // Persistências em paralelo — não bloqueiam o envio já feito.
+  await Promise.all([
+    supabase.from("messages").insert({
+      conversation_id: conversation.id,
+      role: "assistant",
+      content: botResponse.message,
+    }),
+    supabase
+      .from("conversations")
+      .update({
+        temperature: newScore,
+        lead_data: toJson(mergedData),
+        status: newStatus,
+        ...resetFollowUp,
+      })
+      .eq("id", conversation.id),
+    botResponse.action === "book_slot" &&
+    args.bot.google_refresh_token &&
+    args.bot.google_calendar_id
+      ? bookSlotFromAction(
+          args.bot.google_refresh_token,
+          args.bot.google_calendar_id,
+          botResponse
+        )
+      : Promise.resolve(),
+  ]);
 
-  // Ship reply via Meta
-  const sendResult = await sendWhatsAppText({
-    phoneNumberId: args.phoneNumberId,
-    accessToken: args.accessToken,
-    to: args.visitorId,
-    body: botResponse.message,
-  });
   if (!sendResult.ok) {
     console.error(
       "[whatsapp/webhook] send failed:",
