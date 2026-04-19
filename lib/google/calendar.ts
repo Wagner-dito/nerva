@@ -49,6 +49,9 @@ function getClient(refreshToken: string): calendar_v3.Calendar | null {
   return google.calendar({ version: "v3", auth: oauth2 });
 }
 
+// BRT é UTC-3 sem DST desde 2019. Simplifica cálculos.
+const BRT_OFFSET_HOURS = 3;
+
 export async function listAvailableSlots(params: {
   refreshToken: string;
   calendarId: string;
@@ -78,22 +81,45 @@ export async function listAvailableSlots(params: {
   });
   const busy = fb.data.calendars?.[calendarId]?.busy ?? [];
 
-  // Walk days, generate candidate slots, filter by busy
+  // Walk days BRT-aware, generate candidate slots, filter by busy.
   const slots: AvailableSlot[] = [];
   const slotMs = window.slotDurationMinutes * 60_000;
 
+  // Ponto de partida: "hoje" em BRT.
+  const brtNow = new Date(now.getTime() - BRT_OFFSET_HOURS * 3600_000);
+  const startY = brtNow.getUTCFullYear();
+  const startM = brtNow.getUTCMonth();
+  const startD = brtNow.getUTCDate();
+
   for (let d = 0; d < window.daysAhead; d++) {
-    const day = new Date(now.getTime() + d * 24 * 3600 * 1000);
-    const dow = day.getDay();
+    // Meia-noite BRT do dia d (como UTC moment).
+    const brtMidnight = new Date(Date.UTC(startY, startM, startD + d, 0, 0));
+    const dow = brtMidnight.getUTCDay();
     const todayWindows = window.windows.filter((w) => w.dow === dow);
 
     for (const w of todayWindows) {
-      let slotStart = new Date(day);
-      slotStart.setHours(w.startHour, 0, 0, 0);
-      const slotEndLimit = new Date(day);
-      slotEndLimit.setHours(w.endHour, 0, 0, 0);
+      // Constrói momentos UTC equivalentes a BRT w.startHour e w.endHour.
+      // BRT 09:00 => UTC 12:00 (somamos offset).
+      let slotStart = new Date(
+        Date.UTC(
+          startY,
+          startM,
+          startD + d,
+          w.startHour + BRT_OFFSET_HOURS,
+          0
+        )
+      );
+      const slotEndLimit = new Date(
+        Date.UTC(
+          startY,
+          startM,
+          startD + d,
+          w.endHour + BRT_OFFSET_HOURS,
+          0
+        )
+      );
 
-      // Skip slots in the past
+      // Pula slots no passado (compara contra o agora real em UTC).
       if (slotStart.getTime() < now.getTime()) {
         slotStart = new Date(
           Math.ceil(now.getTime() / slotMs) * slotMs
