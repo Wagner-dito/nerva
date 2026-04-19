@@ -112,5 +112,35 @@ function buildRuntimePrompt(conv: ConversationContext): string {
     lines.push(conv.suggested_next_step.trim());
   }
 
+  if (conv.available_slots && conv.available_slots.length > 0) {
+    lines.push("", "# AGENDAMENTO — HORÁRIOS DISPONÍVEIS");
+    lines.push(
+      "Estes são slots livres na agenda do cliente pros próximos dias. Use SÓ estes."
+    );
+    lines.push("");
+    for (const s of conv.available_slots) {
+      lines.push(
+        `- ${s.humanLabel}  (start="${s.startISO}" end="${s.endISO}")`
+      );
+    }
+    lines.push("");
+    lines.push(
+      "Quando o visitante confirmar um slot, emita action='book_slot' com action_payload={start, end, summary, description}."
+    );
+    lines.push(
+      "- start: copie o valor start do slot escolhido"
+    );
+    lines.push("- end: copie o valor end do slot escolhido");
+    lines.push(
+      "- summary: título curto tipo 'Avaliação — <nome do paciente>'"
+    );
+    lines.push(
+      "- description: intenção + contato (telefone/email) pra contexto do profissional"
+    );
+    lines.push(
+      "NÃO ofereça horários fora desta lista. Se nenhum servir, colete preferências e acione action='request_handoff'."
+    );
+  }
+
   return lines.join("\n");
 }

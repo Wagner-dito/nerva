@@ -24,6 +24,7 @@ export const BotResponseSchema = z.object({
     "schedule",
     "send_link",
     "end_conversation",
+    "book_slot",
   ]),
   action_payload: z.record(z.unknown()).nullable(),
 });

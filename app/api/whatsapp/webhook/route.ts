@@ -1,8 +1,14 @@
 import { after, NextResponse } from "next/server";
 
 import { sendMessage } from "@/lib/ai/chat";
+import type { BotResponse } from "@/lib/ai/schema";
 import type { ChatMessage } from "@/lib/ai/types";
 import { serverEnv } from "@/lib/env.server";
+import {
+  createEvent,
+  listAvailableSlots,
+  type AvailableSlot,
+} from "@/lib/google/calendar";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { Database, Json } from "@/lib/supabase/types";
 import {
@@ -67,7 +73,7 @@ async function processPayload(payload: WhatsAppWebhookPayload): Promise<void> {
       const { data: bot } = await supabase
         .from("bots")
         .select(
-          "id, org_id, name, persona, knowledge_base, qualification_questions, niche, handoff_email, whatsapp_access_token"
+          "id, org_id, name, persona, knowledge_base, qualification_questions, niche, handoff_email, whatsapp_access_token, google_refresh_token, google_calendar_id"
         )
         .eq("whatsapp_phone_number_id", phoneNumberId)
         .maybeSingle();
@@ -114,6 +120,8 @@ type BotRow = {
   niche: Database["public"]["Enums"]["bot_niche"];
   handoff_email: string | null;
   whatsapp_access_token: string | null;
+  google_refresh_token: string | null;
+  google_calendar_id: string | null;
 };
 
 async function handleIncoming(
@@ -182,6 +190,8 @@ async function handleIncoming(
     content: args.messageText,
   });
 
+  const slots = await fetchSlotsIfConfigured(args.bot);
+
   const botResponse = await sendMessage({
     bot: {
       niche: args.bot.niche,
@@ -197,10 +207,23 @@ async function handleIncoming(
       extracted_data: extractedSoFar,
       current_score: conversation.temperature,
       channel: "whatsapp",
+      available_slots: slots,
     },
     history,
     userMessage: args.messageText,
   });
+
+  if (
+    botResponse.action === "book_slot" &&
+    args.bot.google_refresh_token &&
+    args.bot.google_calendar_id
+  ) {
+    await bookSlotFromAction(
+      args.bot.google_refresh_token,
+      args.bot.google_calendar_id,
+      botResponse
+    );
+  }
 
   const newScore = clamp(
     conversation.temperature + botResponse.lead_score_delta,
@@ -280,4 +303,57 @@ function clamp(n: number, min: number, max: number): number {
 
 function toJson(v: unknown): Json {
   return JSON.parse(JSON.stringify(v)) as Json;
+}
+
+async function fetchSlotsIfConfigured(bot: {
+  google_refresh_token: string | null;
+  google_calendar_id: string | null;
+}): Promise<AvailableSlot[] | undefined> {
+  if (!bot.google_refresh_token || !bot.google_calendar_id) return undefined;
+  try {
+    return await listAvailableSlots({
+      refreshToken: bot.google_refresh_token,
+      calendarId: bot.google_calendar_id,
+      max: 5,
+    });
+  } catch (err) {
+    console.error("[whatsapp/webhook] listAvailableSlots failed", err);
+    return undefined;
+  }
+}
+
+async function bookSlotFromAction(
+  refreshToken: string,
+  calendarId: string,
+  response: BotResponse
+): Promise<void> {
+  const p = response.action_payload;
+  if (!p) return;
+  const start = asStr(p.start);
+  const end = asStr(p.end);
+  const summary = asStr(p.summary) ?? "Agendamento Nerva";
+  const description = asStr(p.description) ?? undefined;
+  if (!start || !end) return;
+
+  try {
+    const result = await createEvent({
+      refreshToken,
+      calendarId,
+      startISO: start,
+      endISO: end,
+      summary,
+      description,
+    });
+    if (!result.ok) {
+      console.error("[whatsapp/webhook] createEvent failed", result.error);
+    }
+  } catch (err) {
+    console.error("[whatsapp/webhook] createEvent threw", err);
+  }
+}
+
+function asStr(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t.length > 0 ? t : null;
 }

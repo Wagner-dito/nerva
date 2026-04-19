@@ -8,7 +8,8 @@ export type BotAction =
   | "request_handoff"
   | "schedule"
   | "send_link"
-  | "end_conversation";
+  | "end_conversation"
+  | "book_slot";
 
 export type BotTone =
   | "formal profissional"
@@ -41,6 +42,11 @@ export type ConversationContext = {
   current_score: number;
   summary?: string;
   suggested_next_step?: string;
+  available_slots?: Array<{
+    startISO: string;
+    endISO: string;
+    humanLabel: string;
+  }>;
 };
 
 export type ChatMessage = {

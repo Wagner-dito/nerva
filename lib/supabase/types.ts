@@ -92,6 +92,8 @@ export type Database = {
           follow_up_enabled: boolean;
           whatsapp_phone_number_id: string | null;
           whatsapp_access_token: string | null;
+          google_refresh_token: string | null;
+          google_calendar_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -111,6 +113,8 @@ export type Database = {
           follow_up_enabled?: boolean;
           whatsapp_phone_number_id?: string | null;
           whatsapp_access_token?: string | null;
+          google_refresh_token?: string | null;
+          google_calendar_id?: string | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["bots"]["Insert"]>;

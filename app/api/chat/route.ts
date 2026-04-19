@@ -6,6 +6,11 @@ import type { BotResponse } from "@/lib/ai/schema";
 import type { ChatMessage } from "@/lib/ai/types";
 import { sendEmail } from "@/lib/email/resend";
 import { renderHandoffEmail } from "@/lib/email/templates/handoff";
+import {
+  createEvent,
+  listAvailableSlots,
+  type AvailableSlot,
+} from "@/lib/google/calendar";
 import { rateLimit } from "@/lib/rate-limit";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { Database, Json } from "@/lib/supabase/types";
@@ -104,7 +109,7 @@ export async function POST(request: Request) {
   const { data: bot } = await supabase
     .from("bots")
     .select(
-      "id, org_id, name, persona, knowledge_base, qualification_questions, niche, allowed_origins, handoff_email"
+      "id, org_id, name, persona, knowledge_base, qualification_questions, niche, allowed_origins, handoff_email, google_refresh_token, google_calendar_id"
     )
     .eq("id", bot_id)
     .maybeSingle();
@@ -162,6 +167,8 @@ export async function POST(request: Request) {
     content: message,
   });
 
+  const slots = await fetchSlotsIfConfigured(bot);
+
   let botResponse: BotResponse;
   try {
     botResponse = await sendMessage({
@@ -178,6 +185,7 @@ export async function POST(request: Request) {
         message_count: history.length + 1,
         extracted_data: extractedSoFar,
         current_score: conversation.temperature,
+        available_slots: slots,
       },
       history,
       userMessage: message,
@@ -185,6 +193,18 @@ export async function POST(request: Request) {
   } catch (err) {
     console.error("[api/chat] Gemini call failed", err);
     return json({ error: "Falha ao gerar resposta" }, 502, origin);
+  }
+
+  if (
+    botResponse.action === "book_slot" &&
+    bot.google_refresh_token &&
+    bot.google_calendar_id
+  ) {
+    await bookSlotFromAction(
+      bot.google_refresh_token,
+      bot.google_calendar_id,
+      botResponse
+    );
   }
 
   const newScore = clamp(
@@ -301,6 +321,53 @@ function asString(v: unknown): string | null {
   if (typeof v !== "string") return null;
   const t = v.trim();
   return t.length > 0 ? t : null;
+}
+
+async function fetchSlotsIfConfigured(bot: {
+  google_refresh_token: string | null;
+  google_calendar_id: string | null;
+}): Promise<AvailableSlot[] | undefined> {
+  if (!bot.google_refresh_token || !bot.google_calendar_id) return undefined;
+  try {
+    return await listAvailableSlots({
+      refreshToken: bot.google_refresh_token,
+      calendarId: bot.google_calendar_id,
+      max: 5,
+    });
+  } catch (err) {
+    console.error("[api/chat] listAvailableSlots failed", err);
+    return undefined;
+  }
+}
+
+async function bookSlotFromAction(
+  refreshToken: string,
+  calendarId: string,
+  response: BotResponse
+): Promise<void> {
+  const p = response.action_payload;
+  if (!p) return;
+  const start = asString(p.start);
+  const end = asString(p.end);
+  const summary = asString(p.summary) ?? "Agendamento Nerva";
+  const description = asString(p.description) ?? undefined;
+  if (!start || !end) return;
+
+  try {
+    const result = await createEvent({
+      refreshToken,
+      calendarId,
+      startISO: start,
+      endISO: end,
+      summary,
+      description,
+    });
+    if (!result.ok) {
+      console.error("[api/chat] createEvent failed", result.error);
+    }
+  } catch (err) {
+    console.error("[api/chat] createEvent threw", err);
+  }
 }
 
 type AdminClient = ReturnType<typeof createAdminClient>;

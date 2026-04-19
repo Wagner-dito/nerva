@@ -12,6 +12,8 @@ const serverEnvSchema = z.object({
   STRIPE_PRICE_STARTER: z.string().optional(),
   STRIPE_PRICE_PRO: z.string().optional(),
   WHATSAPP_VERIFY_TOKEN: z.string().optional(),
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
 });
 
 export const serverEnv = serverEnvSchema.parse({
@@ -25,4 +27,6 @@ export const serverEnv = serverEnvSchema.parse({
   STRIPE_PRICE_STARTER: process.env.STRIPE_PRICE_STARTER,
   STRIPE_PRICE_PRO: process.env.STRIPE_PRICE_PRO,
   WHATSAPP_VERIFY_TOKEN: process.env.WHATSAPP_VERIFY_TOKEN,
+  GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
 });
