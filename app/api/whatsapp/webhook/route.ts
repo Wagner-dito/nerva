@@ -140,6 +140,8 @@ async function handleIncoming(
 
   let conversation: ConversationRow | null = existing ?? null;
   if (!conversation) {
+    // WhatsApp visitor_id é o número do visitante (com código do país).
+    // Pré-popula lead_data.phone pra Sofia não perguntar de novo.
     const { data: created } = await supabase
       .from("conversations")
       .insert({
@@ -147,7 +149,7 @@ async function handleIncoming(
         visitor_id: args.visitorId,
         status: "active",
         temperature: INITIAL_SCORE,
-        lead_data: {},
+        lead_data: { phone: `+${args.visitorId}` },
         channel: "whatsapp",
       })
       .select("*")

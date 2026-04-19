@@ -80,7 +80,7 @@ function buildClientPrompt(bot: BotContext): string {
 function buildRuntimePrompt(conv: ConversationContext): string {
   const lines: string[] = ["# CONTEXTO DA CONVERSA ATUAL"];
   lines.push(`ID da conversa: ${conv.id}`);
-  if (conv.channel) lines.push(`Canal: ${conv.channel}`);
+  lines.push(`Canal: ${conv.channel ?? "web"}`);
   lines.push(`Mensagens trocadas: ${conv.message_count}`);
   if (conv.duration_minutes !== undefined) {
     lines.push(`Duração: ${conv.duration_minutes} minutos`);
