@@ -1,0 +1,276 @@
+import { NextResponse } from "next/server";
+
+import { sendMessage } from "@/lib/ai/chat";
+import type { ChatMessage } from "@/lib/ai/types";
+import { serverEnv } from "@/lib/env.server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import type { Database, Json } from "@/lib/supabase/types";
+import {
+  sendWhatsAppText,
+  type WhatsAppWebhookPayload,
+} from "@/lib/whatsapp/client";
+
+const INITIAL_SCORE = 30;
+const HISTORY_LIMIT = 20;
+
+/**
+ * Meta handshake (GET) — validates subscription.
+ * Query: hub.mode=subscribe&hub.verify_token=XXX&hub.challenge=YYY
+ */
+export async function GET(request: Request) {
+  if (!serverEnv.WHATSAPP_VERIFY_TOKEN) {
+    return new NextResponse("Not configured", { status: 503 });
+  }
+  const url = new URL(request.url);
+  const mode = url.searchParams.get("hub.mode");
+  const token = url.searchParams.get("hub.verify_token");
+  const challenge = url.searchParams.get("hub.challenge");
+
+  if (mode === "subscribe" && token === serverEnv.WHATSAPP_VERIFY_TOKEN) {
+    return new NextResponse(challenge ?? "", { status: 200 });
+  }
+  return new NextResponse("Forbidden", { status: 403 });
+}
+
+export async function POST(request: Request) {
+  let payload: WhatsAppWebhookPayload;
+  try {
+    payload = (await request.json()) as WhatsAppWebhookPayload;
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  // Meta expects 200 OK within ~20s, otherwise it retries. We fire-and-forget
+  // the processing but respond fast.
+  void processPayload(payload).catch((err) =>
+    console.error("[whatsapp/webhook] processing error", err)
+  );
+
+  return NextResponse.json({ received: true });
+}
+
+async function processPayload(payload: WhatsAppWebhookPayload): Promise<void> {
+  const supabase = createAdminClient();
+
+  for (const entry of payload.entry ?? []) {
+    for (const change of entry.changes ?? []) {
+      const value = change.value;
+      const phoneNumberId = value.metadata?.phone_number_id;
+      const messages = value.messages ?? [];
+      if (!phoneNumberId || messages.length === 0) continue;
+
+      const { data: bot } = await supabase
+        .from("bots")
+        .select(
+          "id, org_id, name, persona, knowledge_base, qualification_questions, niche, handoff_email, whatsapp_access_token"
+        )
+        .eq("whatsapp_phone_number_id", phoneNumberId)
+        .maybeSingle();
+      if (!bot || !bot.whatsapp_access_token) {
+        console.warn(
+          "[whatsapp/webhook] no bot or token for phone_number_id",
+          phoneNumberId
+        );
+        continue;
+      }
+
+      const { data: org } = await supabase
+        .from("organizations")
+        .select("name")
+        .eq("id", bot.org_id)
+        .maybeSingle();
+      if (!org) continue;
+
+      for (const msg of messages) {
+        if (msg.type !== "text" || !msg.text?.body) continue;
+        await handleIncoming(supabase, {
+          bot,
+          orgName: org.name,
+          visitorId: msg.from,
+          messageText: msg.text.body,
+          phoneNumberId,
+          accessToken: bot.whatsapp_access_token,
+        });
+      }
+    }
+  }
+}
+
+type AdminClient = ReturnType<typeof createAdminClient>;
+type ConversationRow =
+  Database["public"]["Tables"]["conversations"]["Row"];
+type BotRow = {
+  id: string;
+  org_id: string;
+  name: string;
+  persona: string | null;
+  knowledge_base: string | null;
+  qualification_questions: Json;
+  niche: Database["public"]["Enums"]["bot_niche"];
+  handoff_email: string | null;
+  whatsapp_access_token: string | null;
+};
+
+async function handleIncoming(
+  supabase: AdminClient,
+  args: {
+    bot: BotRow;
+    orgName: string;
+    visitorId: string;
+    messageText: string;
+    phoneNumberId: string;
+    accessToken: string;
+  }
+): Promise<void> {
+  const { data: existing } = await supabase
+    .from("conversations")
+    .select("*")
+    .eq("bot_id", args.bot.id)
+    .eq("visitor_id", args.visitorId)
+    .eq("channel", "whatsapp")
+    .in("status", ["active", "qualified"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  let conversation: ConversationRow | null = existing ?? null;
+  if (!conversation) {
+    const { data: created } = await supabase
+      .from("conversations")
+      .insert({
+        bot_id: args.bot.id,
+        visitor_id: args.visitorId,
+        status: "active",
+        temperature: INITIAL_SCORE,
+        lead_data: {},
+        channel: "whatsapp",
+      })
+      .select("*")
+      .single();
+    conversation = created ?? null;
+  }
+  if (!conversation) return;
+
+  const { data: historyRows } = await supabase
+    .from("messages")
+    .select("role, content")
+    .eq("conversation_id", conversation.id)
+    .order("created_at", { ascending: true })
+    .limit(HISTORY_LIMIT);
+
+  const history: ChatMessage[] = (historyRows ?? [])
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: m.content,
+    }));
+
+  const extractedSoFar = isRecord(conversation.lead_data)
+    ? (conversation.lead_data as Record<string, unknown>)
+    : {};
+
+  await supabase.from("messages").insert({
+    conversation_id: conversation.id,
+    role: "user",
+    content: args.messageText,
+  });
+
+  const botResponse = await sendMessage({
+    bot: {
+      niche: args.bot.niche,
+      name: args.bot.name,
+      persona: args.bot.persona,
+      knowledge_base: args.bot.knowledge_base,
+      qualification_questions: toStringArray(args.bot.qualification_questions),
+      organization: { name: args.orgName },
+    },
+    conversation: {
+      id: conversation.id,
+      message_count: history.length + 1,
+      extracted_data: extractedSoFar,
+      current_score: conversation.temperature,
+      channel: "whatsapp",
+    },
+    history,
+    userMessage: args.messageText,
+  });
+
+  const newScore = clamp(
+    conversation.temperature + botResponse.lead_score_delta,
+    0,
+    100
+  );
+  const mergedData = {
+    ...extractedSoFar,
+    ...stripEmpty(botResponse.extracted_data),
+  };
+
+  await supabase.from("messages").insert({
+    conversation_id: conversation.id,
+    role: "assistant",
+    content: botResponse.message,
+  });
+
+  const newStatus =
+    botResponse.action === "end_conversation"
+      ? "closed"
+      : botResponse.action === "request_handoff" || newScore >= 85
+        ? "qualified"
+        : conversation.status;
+
+  const resetFollowUp =
+    conversation.follow_up_count > 0
+      ? { follow_up_count: 0, last_follow_up_at: null }
+      : {};
+
+  await supabase
+    .from("conversations")
+    .update({
+      temperature: newScore,
+      lead_data: toJson(mergedData),
+      status: newStatus,
+      ...resetFollowUp,
+    })
+    .eq("id", conversation.id);
+
+  // Ship reply via Meta
+  const sendResult = await sendWhatsAppText({
+    phoneNumberId: args.phoneNumberId,
+    accessToken: args.accessToken,
+    to: args.visitorId,
+    body: botResponse.message,
+  });
+  if (!sendResult.ok) {
+    console.error(
+      "[whatsapp/webhook] send failed:",
+      sendResult.error
+    );
+  }
+}
+
+function toStringArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === "string");
+}
+
+function stripEmpty<T extends Record<string, unknown>>(obj: T): Partial<T> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === null || v === undefined) continue;
+    if (typeof v === "string" && v.trim().length === 0) continue;
+    out[k] = v;
+  }
+  return out as Partial<T>;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(Math.max(n, min), max);
+}
+
+function toJson(v: unknown): Json {
+  return JSON.parse(JSON.stringify(v)) as Json;
+}

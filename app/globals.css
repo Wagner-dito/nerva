@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Nerva — dark-first. HSL em "H S% L%" pro shadcn. */
+
+    /* Ink #0A0A0F */
+    --background: 240 20% 5%;
+    --foreground: 0 0% 98%;
+
+    /* Ink Card #1E1E26 */
+    --card: 240 12% 13%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 240 12% 13%;
+    --popover-foreground: 0 0% 98%;
+
+    /* Signal (laranja) — principal */
+    --primary: 16 100% 56%;
+    --primary-foreground: 0 0% 98%;
+
+    --secondary: 240 10% 14%;
+    --secondary-foreground: 0 0% 98%;
+
+    /* Muted #6B6B74 */
+    --muted: 240 10% 14%;
+    --muted-foreground: 240 4% 44%;
+
+    /* Synapse (verde) — reservado pra estados ativo/sucesso */
+    --accent: 165 100% 42%;
+    --accent-foreground: 240 20% 5%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 240 10% 18%;
+    --input: 240 10% 18%;
+    --ring: 16 100% 56%;
+
+    --radius: 0.625rem;
+
+    /* Pulse (amarelo) — acento auxiliar */
+    --pulse: 46 100% 62%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+@layer utilities {
+  .bg-signal-glow {
+    background-image: radial-gradient(
+      ellipse 60% 45% at 50% 0%,
+      hsl(var(--primary) / 0.14),
+      transparent 70%
+    );
+  }
+}
