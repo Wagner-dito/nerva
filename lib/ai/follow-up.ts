@@ -1,8 +1,6 @@
 import "server-only";
 
-import { GoogleGenAI } from "@google/genai";
-
-import { serverEnv } from "@/lib/env.server";
+import { generateContent, type GeminiContent } from "@/lib/ai/gemini";
 import { buildSystemPrompt } from "@/lib/ai/prompt-builder";
 import { BotResponseSchema, type BotResponse } from "@/lib/ai/schema";
 import type {
@@ -22,7 +20,8 @@ function followUpInstruction(
   followUpCount: number,
   hoursSince: number
 ): string {
-  const ordinal = ["primeiro", "segundo", "terceiro"][followUpCount] ?? "quarto+";
+  const ordinal =
+    ["primeiro", "segundo", "terceiro"][followUpCount] ?? "quarto+";
   const isLast = followUpCount >= 2;
 
   return `# FOLLOW-UP MODE
@@ -49,14 +48,6 @@ ${
 `;
 }
 
-let cachedClient: GoogleGenAI | null = null;
-function getClient(): GoogleGenAI {
-  if (!cachedClient) {
-    cachedClient = new GoogleGenAI({ apiKey: serverEnv.GEMINI_API_KEY });
-  }
-  return cachedClient;
-}
-
 export async function sendFollowUp(params: {
   bot: BotContext;
   conversation: ConversationContext;
@@ -73,7 +64,7 @@ export async function sendFollowUp(params: {
     params.hoursSince
   )}`;
 
-  const contents = [
+  const contents: GeminiContent[] = [
     ...params.history.map((m) => ({
       role: m.role === "assistant" ? ("model" as const) : ("user" as const),
       parts: [{ text: m.content }],
@@ -84,20 +75,23 @@ export async function sendFollowUp(params: {
     },
   ];
 
-  const response = await getClient().models.generateContent({
-    model: DEFAULT_MODEL,
-    contents,
-    config: {
-      systemInstruction: systemPrompt,
-      responseMimeType: "application/json",
-      temperature: DEFAULT_TEMPERATURE,
-      maxOutputTokens: DEFAULT_MAX_TOKENS,
-    },
-  });
-
-  const raw = (response.text ?? "").trim();
+  let raw = "";
   try {
-    const json = JSON.parse(raw);
+    raw = await generateContent({
+      model: DEFAULT_MODEL,
+      systemInstruction: systemPrompt,
+      contents,
+      config: {
+        temperature: DEFAULT_TEMPERATURE,
+        maxOutputTokens: DEFAULT_MAX_TOKENS,
+      },
+    });
+  } catch (err) {
+    console.error("[ai/follow-up] Gemini call failed:", err);
+  }
+
+  try {
+    const json = JSON.parse(raw.trim());
     const result = BotResponseSchema.safeParse(json);
     if (result.success) return result.data;
   } catch {

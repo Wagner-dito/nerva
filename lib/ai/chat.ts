@@ -1,8 +1,6 @@
 import "server-only";
 
-import { GoogleGenAI } from "@google/genai";
-
-import { serverEnv } from "@/lib/env.server";
+import { generateContent, type GeminiContent } from "@/lib/ai/gemini";
 import { buildSystemPrompt } from "@/lib/ai/prompt-builder";
 import { BotResponseSchema, type BotResponse } from "@/lib/ai/schema";
 import type {
@@ -15,14 +13,8 @@ const DEFAULT_MODEL = "gemini-2.5-flash";
 const DEFAULT_MAX_TOKENS = 2048;
 const DEFAULT_TEMPERATURE = 0.6;
 
-let cachedClient: GoogleGenAI | null = null;
-
-function getClient(): GoogleGenAI {
-  if (!cachedClient) {
-    cachedClient = new GoogleGenAI({ apiKey: serverEnv.GEMINI_API_KEY });
-  }
-  return cachedClient;
-}
+const FALLBACK_MESSAGE =
+  "Tive um probleminha técnico aqui. Pode repetir a última mensagem?";
 
 type SendMessageParams = {
   bot: BotContext;
@@ -40,23 +32,27 @@ export async function sendMessage(
     conversation: params.conversation,
   });
 
-  const contents = [
+  const contents: GeminiContent[] = [
     ...params.history.map(toGeminiContent),
-    { role: "user" as const, parts: [{ text: params.userMessage }] },
+    { role: "user", parts: [{ text: params.userMessage }] },
   ];
 
-  const response = await getClient().models.generateContent({
-    model: params.model ?? DEFAULT_MODEL,
-    contents,
-    config: {
+  let raw = "";
+  try {
+    raw = await generateContent({
+      model: params.model ?? DEFAULT_MODEL,
       systemInstruction: systemPrompt,
-      responseMimeType: "application/json",
-      temperature: DEFAULT_TEMPERATURE,
-      maxOutputTokens: DEFAULT_MAX_TOKENS,
-    },
-  });
+      contents,
+      config: {
+        temperature: DEFAULT_TEMPERATURE,
+        maxOutputTokens: DEFAULT_MAX_TOKENS,
+      },
+    });
+  } catch (err) {
+    console.error("[ai/chat] Gemini call failed:", err);
+    return fallbackResponse(FALLBACK_MESSAGE);
+  }
 
-  const raw = response.text ?? "";
   const parsed = parseBotResponse(raw);
   if (parsed.message === FALLBACK_MESSAGE) {
     console.warn("[ai/chat] fallback triggered. Raw response:", raw);
@@ -64,18 +60,12 @@ export async function sendMessage(
   return parsed;
 }
 
-function toGeminiContent(message: ChatMessage): {
-  role: "user" | "model";
-  parts: { text: string }[];
-} {
+function toGeminiContent(message: ChatMessage): GeminiContent {
   return {
     role: message.role === "assistant" ? "model" : "user",
     parts: [{ text: message.content }],
   };
 }
-
-const FALLBACK_MESSAGE =
-  "Tive um probleminha técnico aqui. Pode repetir a última mensagem?";
 
 function fallbackResponse(message: string): BotResponse {
   return {

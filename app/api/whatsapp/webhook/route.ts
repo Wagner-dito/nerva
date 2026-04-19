@@ -17,8 +17,11 @@ import {
   type WhatsAppWebhookPayload,
 } from "@/lib/whatsapp/client";
 
-// maxDuration só vira real no plano Pro (60s). Hobby ignora mas não quebra.
-export const maxDuration = 60;
+// Edge runtime — 25s timeout no Hobby (vs 10s Node). Possível agora que
+// todas as chamadas externas usam fetch direto (sem @google/genai nem
+// googleapis no path).
+export const runtime = "edge";
+export const maxDuration = 25;
 
 const INITIAL_SCORE = 30;
 const HISTORY_LIMIT = 20;
