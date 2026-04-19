@@ -1,19 +1,16 @@
 import "server-only";
 
-import { calendar_v3, google } from "googleapis";
-
 import { serverEnv } from "@/lib/env.server";
 
 export type AvailableSlot = {
   startISO: string;
   endISO: string;
-  humanLabel: string; // e.g., "ter 23/04, 14:00"
+  humanLabel: string;
 };
 
 type BookingWindow = {
   slotDurationMinutes: number;
   daysAhead: number;
-  // Work windows per day-of-week (0=Sun, 6=Sat) — local time (24h).
   windows: { dow: number; startHour: number; endHour: number }[];
   timeZone: string;
 };
@@ -21,7 +18,6 @@ type BookingWindow = {
 const DEFAULT_WINDOW: BookingWindow = {
   slotDurationMinutes: 30,
   daysAhead: 14,
-  // Mon-Fri 09:00-12:00 + 14:00-18:00
   windows: [
     { dow: 1, startHour: 9, endHour: 12 },
     { dow: 1, startHour: 14, endHour: 18 },
@@ -37,20 +33,86 @@ const DEFAULT_WINDOW: BookingWindow = {
   timeZone: "America/Sao_Paulo",
 };
 
-function getClient(refreshToken: string): calendar_v3.Calendar | null {
+const BRT_OFFSET_HOURS = 3;
+const GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3";
+
+type CachedToken = { accessToken: string; expiresAt: number };
+const tokenCache = new Map<string, CachedToken>();
+
+async function getAccessToken(refreshToken: string): Promise<string | null> {
+  const cached = tokenCache.get(refreshToken);
+  if (cached && cached.expiresAt > Date.now() + 60_000) {
+    return cached.accessToken;
+  }
+
   if (!serverEnv.GOOGLE_CLIENT_ID || !serverEnv.GOOGLE_CLIENT_SECRET) {
     return null;
   }
-  const oauth2 = new google.auth.OAuth2(
-    serverEnv.GOOGLE_CLIENT_ID,
-    serverEnv.GOOGLE_CLIENT_SECRET
-  );
-  oauth2.setCredentials({ refresh_token: refreshToken });
-  return google.calendar({ version: "v3", auth: oauth2 });
+
+  const body = new URLSearchParams({
+    client_id: serverEnv.GOOGLE_CLIENT_ID,
+    client_secret: serverEnv.GOOGLE_CLIENT_SECRET,
+    refresh_token: refreshToken,
+    grant_type: "refresh_token",
+  });
+
+  const res = await fetch(GOOGLE_OAUTH_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+
+  if (!res.ok) {
+    console.error("[google/calendar] refresh token failed:", res.status);
+    return null;
+  }
+
+  const data = (await res.json()) as {
+    access_token: string;
+    expires_in?: number;
+  };
+  const expiresIn = data.expires_in ?? 3600;
+  tokenCache.set(refreshToken, {
+    accessToken: data.access_token,
+    expiresAt: Date.now() + expiresIn * 1000,
+  });
+  return data.access_token;
 }
 
-// BRT é UTC-3 sem DST desde 2019. Simplifica cálculos.
-const BRT_OFFSET_HOURS = 3;
+type BusyPeriod = { start?: string; end?: string };
+
+async function freeBusyQuery(
+  accessToken: string,
+  calendarId: string,
+  timeMin: string,
+  timeMax: string,
+  timeZone: string
+): Promise<BusyPeriod[]> {
+  const res = await fetch(`${CALENDAR_API_BASE}/freeBusy`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      timeMin,
+      timeMax,
+      timeZone,
+      items: [{ id: calendarId }],
+    }),
+  });
+
+  if (!res.ok) {
+    console.error("[google/calendar] freeBusy failed:", res.status);
+    return [];
+  }
+
+  const data = (await res.json()) as {
+    calendars?: Record<string, { busy?: BusyPeriod[] }>;
+  };
+  return data.calendars?.[calendarId]?.busy ?? [];
+}
 
 export async function listAvailableSlots(params: {
   refreshToken: string;
@@ -63,43 +125,34 @@ export async function listAvailableSlots(params: {
   const window = params.window ?? DEFAULT_WINDOW;
   const now = params.now ?? new Date();
 
-  const client = getClient(refreshToken);
-  if (!client) return [];
+  const accessToken = await getAccessToken(refreshToken);
+  if (!accessToken) return [];
 
   const rangeEnd = new Date(
-    now.getTime() + window.daysAhead * 24 * 3600 * 1000
+    now.getTime() + window.daysAhead * 24 * 3600_000
+  );
+  const busy = await freeBusyQuery(
+    accessToken,
+    calendarId,
+    now.toISOString(),
+    rangeEnd.toISOString(),
+    window.timeZone
   );
 
-  // Query busy periods
-  const fb = await client.freebusy.query({
-    requestBody: {
-      timeMin: now.toISOString(),
-      timeMax: rangeEnd.toISOString(),
-      timeZone: window.timeZone,
-      items: [{ id: calendarId }],
-    },
-  });
-  const busy = fb.data.calendars?.[calendarId]?.busy ?? [];
-
-  // Walk days BRT-aware, generate candidate slots, filter by busy.
   const slots: AvailableSlot[] = [];
   const slotMs = window.slotDurationMinutes * 60_000;
 
-  // Ponto de partida: "hoje" em BRT.
   const brtNow = new Date(now.getTime() - BRT_OFFSET_HOURS * 3600_000);
   const startY = brtNow.getUTCFullYear();
   const startM = brtNow.getUTCMonth();
   const startD = brtNow.getUTCDate();
 
   for (let d = 0; d < window.daysAhead; d++) {
-    // Meia-noite BRT do dia d (como UTC moment).
     const brtMidnight = new Date(Date.UTC(startY, startM, startD + d, 0, 0));
     const dow = brtMidnight.getUTCDay();
     const todayWindows = window.windows.filter((w) => w.dow === dow);
 
     for (const w of todayWindows) {
-      // Constrói momentos UTC equivalentes a BRT w.startHour e w.endHour.
-      // BRT 09:00 => UTC 12:00 (somamos offset).
       let slotStart = new Date(
         Date.UTC(
           startY,
@@ -119,7 +172,6 @@ export async function listAvailableSlots(params: {
         )
       );
 
-      // Pula slots no passado (compara contra o agora real em UTC).
       if (slotStart.getTime() < now.getTime()) {
         slotStart = new Date(
           Math.ceil(now.getTime() / slotMs) * slotMs
@@ -140,14 +192,13 @@ export async function listAvailableSlots(params: {
       }
     }
   }
-
   return slots;
 }
 
 function overlapsBusy(
   start: Date,
   end: Date,
-  busy: calendar_v3.Schema$TimePeriod[]
+  busy: BusyPeriod[]
 ): boolean {
   const s = start.getTime();
   const e = end.getTime();
@@ -184,30 +235,49 @@ export async function createEvent(params: {
   description?: string;
   timeZone?: string;
 }): Promise<{ ok: boolean; eventId?: string; error?: string }> {
-  const client = getClient(params.refreshToken);
-  if (!client) return { ok: false, error: "Google not configured" };
+  const accessToken = await getAccessToken(params.refreshToken);
+  if (!accessToken) return { ok: false, error: "Google not configured" };
 
+  const tz = params.timeZone ?? "America/Sao_Paulo";
   try {
-    const res = await client.events.insert({
-      calendarId: params.calendarId,
-      requestBody: {
-        summary: params.summary,
-        description: params.description,
-        start: {
-          dateTime: params.startISO,
-          timeZone: params.timeZone ?? "America/Sao_Paulo",
+    const res = await fetch(
+      `${CALENDAR_API_BASE}/calendars/${encodeURIComponent(params.calendarId)}/events`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
         },
-        end: {
-          dateTime: params.endISO,
-          timeZone: params.timeZone ?? "America/Sao_Paulo",
-        },
-      },
-    });
-    return { ok: true, eventId: res.data.id ?? undefined };
+        body: JSON.stringify({
+          summary: params.summary,
+          description: params.description,
+          start: { dateTime: params.startISO, timeZone: tz },
+          end: { dateTime: params.endISO, timeZone: tz },
+        }),
+      }
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      return { ok: false, error: `HTTP ${res.status}: ${text}` };
+    }
+    const data = (await res.json()) as { id?: string };
+    return { ok: true, eventId: data.id };
   } catch (err) {
     return {
       ok: false,
       error: err instanceof Error ? err.message : "unknown",
     };
   }
+}
+
+// Heuristic: skip Calendar fetch when user's message is unlikely to need
+// scheduling info. Saves ~2-3s on greetings and acks.
+export function userMightSchedule(
+  message: string,
+  messageCount: number
+): boolean {
+  if (messageCount >= 3) return true;
+  const rx =
+    /\b(marcar|agendar|agenda|consulta|avali|hor[aá]ri?o|data|dia|hora|amanh[aã]|hoje|pr[óo]xim|semana|segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado|domingo|manh[aã]|tarde|noite|\d{1,2}h|\d{1,2}:\d{2})/i;
+  return rx.test(message);
 }

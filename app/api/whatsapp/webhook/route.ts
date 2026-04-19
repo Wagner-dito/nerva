@@ -7,6 +7,7 @@ import { serverEnv } from "@/lib/env.server";
 import {
   createEvent,
   listAvailableSlots,
+  userMightSchedule,
   type AvailableSlot,
 } from "@/lib/google/calendar";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -15,6 +16,10 @@ import {
   sendWhatsAppText,
   type WhatsAppWebhookPayload,
 } from "@/lib/whatsapp/client";
+
+// Edge runtime gives us 25s on Hobby (vs 10s Node), enough headroom for
+// cold start + Calendar fetch + Gemini + Meta send end-to-end.
+export const runtime = "edge";
 
 const INITIAL_SCORE = 30;
 const HISTORY_LIMIT = 20;
@@ -190,7 +195,11 @@ async function handleIncoming(
     content: args.messageText,
   });
 
-  const slots = await fetchSlotsIfConfigured(args.bot);
+  const slots = await fetchSlotsIfConfigured(
+    args.bot,
+    args.messageText,
+    history.length + 1
+  );
 
   const botResponse = await sendMessage({
     bot: {
@@ -308,17 +317,22 @@ function toJson(v: unknown): Json {
 
 const SLOT_FETCH_TIMEOUT_MS = 3000;
 
-async function fetchSlotsIfConfigured(bot: {
-  google_refresh_token: string | null;
-  google_calendar_id: string | null;
-}): Promise<AvailableSlot[] | undefined> {
+async function fetchSlotsIfConfigured(
+  bot: {
+    google_refresh_token: string | null;
+    google_calendar_id: string | null;
+  },
+  userMessage: string,
+  messageCount: number
+): Promise<AvailableSlot[] | undefined> {
   if (!bot.google_refresh_token || !bot.google_calendar_id) return undefined;
+  if (!userMightSchedule(userMessage, messageCount)) return undefined;
   try {
     return await Promise.race<AvailableSlot[] | undefined>([
       listAvailableSlots({
         refreshToken: bot.google_refresh_token,
         calendarId: bot.google_calendar_id,
-        max: 30,
+        max: 15,
       }),
       new Promise<undefined>((_, reject) =>
         setTimeout(

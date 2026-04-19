@@ -9,6 +9,7 @@ import { renderHandoffEmail } from "@/lib/email/templates/handoff";
 import {
   createEvent,
   listAvailableSlots,
+  userMightSchedule,
   type AvailableSlot,
 } from "@/lib/google/calendar";
 import { rateLimit } from "@/lib/rate-limit";
@@ -167,7 +168,11 @@ export async function POST(request: Request) {
     content: message,
   });
 
-  const slots = await fetchSlotsIfConfigured(bot);
+  const slots = await fetchSlotsIfConfigured(
+    bot,
+    message,
+    history.length + 1
+  );
 
   let botResponse: BotResponse;
   try {
@@ -325,17 +330,22 @@ function asString(v: unknown): string | null {
 
 const SLOT_FETCH_TIMEOUT_MS = 3000;
 
-async function fetchSlotsIfConfigured(bot: {
-  google_refresh_token: string | null;
-  google_calendar_id: string | null;
-}): Promise<AvailableSlot[] | undefined> {
+async function fetchSlotsIfConfigured(
+  bot: {
+    google_refresh_token: string | null;
+    google_calendar_id: string | null;
+  },
+  userMessage: string,
+  messageCount: number
+): Promise<AvailableSlot[] | undefined> {
   if (!bot.google_refresh_token || !bot.google_calendar_id) return undefined;
+  if (!userMightSchedule(userMessage, messageCount)) return undefined;
   try {
     return await Promise.race<AvailableSlot[] | undefined>([
       listAvailableSlots({
         refreshToken: bot.google_refresh_token,
         calendarId: bot.google_calendar_id,
-        max: 30,
+        max: 15,
       }),
       new Promise<undefined>((_, reject) =>
         setTimeout(
