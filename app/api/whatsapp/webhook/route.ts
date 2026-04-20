@@ -1,6 +1,7 @@
 import { after, NextResponse } from "next/server";
 
 import { sendMessage } from "@/lib/ai/chat";
+import { transcribeAudio } from "@/lib/ai/gemini";
 import type { BotResponse } from "@/lib/ai/schema";
 import type { ChatMessage } from "@/lib/ai/types";
 import { serverEnv } from "@/lib/env.server";
@@ -14,7 +15,9 @@ import {
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { Database, Json } from "@/lib/supabase/types";
 import {
+  downloadWhatsAppMedia,
   sendWhatsAppText,
+  uint8ToBase64,
   type WhatsAppWebhookPayload,
 } from "@/lib/whatsapp/client";
 
@@ -101,18 +104,61 @@ async function processPayload(payload: WhatsAppWebhookPayload): Promise<void> {
       if (!org) continue;
 
       for (const msg of messages) {
-        if (msg.type !== "text" || !msg.text?.body) continue;
+        const messageText = await extractText(
+          msg,
+          bot.whatsapp_access_token
+        );
+        if (!messageText) continue;
         await handleIncoming(supabase, {
           bot,
           orgName: org.name,
           visitorId: msg.from,
-          messageText: msg.text.body,
+          messageText,
           phoneNumberId,
           accessToken: bot.whatsapp_access_token,
         });
       }
     }
   }
+}
+
+/**
+ * Extrai texto da mensagem — suporta text direto e audio (via transcrição
+ * Gemini). Outros tipos (imagem, doc, video) retornam null por enquanto.
+ */
+async function extractText(
+  msg: {
+    type: string;
+    text?: { body: string };
+    audio?: { id: string; mime_type?: string };
+  },
+  accessToken: string
+): Promise<string | null> {
+  if (msg.type === "text") {
+    return msg.text?.body?.trim() || null;
+  }
+
+  if (msg.type === "audio" && msg.audio?.id) {
+    const media = await downloadWhatsAppMedia({
+      mediaId: msg.audio.id,
+      accessToken,
+    });
+    if (!media) return null;
+    const base64 = uint8ToBase64(media.data);
+    try {
+      const transcript = await transcribeAudio({
+        audioBase64: base64,
+        mimeType: msg.audio.mime_type ?? media.mimeType,
+      });
+      const clean = transcript.trim();
+      return clean.length > 0 ? clean : null;
+    } catch (err) {
+      console.error("[whatsapp/webhook] transcribe failed:", err);
+      return null;
+    }
+  }
+
+  return null;
 }
 
 type AdminClient = ReturnType<typeof createAdminClient>;

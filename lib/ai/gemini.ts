@@ -61,3 +61,62 @@ export async function generateContent(params: {
   const parts = data.candidates?.[0]?.content?.parts ?? [];
   return parts.map((p) => p.text ?? "").join("");
 }
+
+/**
+ * Uses Gemini multimodal to transcribe an audio clip. Returns the plain text.
+ * WhatsApp áudio chega como OGG/opus (`audio/ogg`). Gemini aceita direto.
+ */
+export async function transcribeAudio(params: {
+  audioBase64: string;
+  mimeType: string;
+  model?: string;
+}): Promise<string> {
+  const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(
+    params.model ?? "gemini-2.5-flash"
+  )}:generateContent?key=${encodeURIComponent(serverEnv.GEMINI_API_KEY)}`;
+
+  const body = {
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text: "Transcreva este áudio em português brasileiro. Retorne APENAS o texto falado, sem comentários, sem formatação, sem timestamps. Se não houver fala audível, retorne uma string vazia.",
+          },
+          {
+            inlineData: {
+              mimeType: params.mimeType,
+              data: params.audioBase64,
+            },
+          },
+        ],
+      },
+    ],
+    generationConfig: {
+      temperature: 0.0,
+      maxOutputTokens: 1024,
+    },
+  };
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Gemini transcribe ${res.status}: ${text}`);
+  }
+
+  const data = (await res.json()) as {
+    candidates?: Array<{
+      content?: { parts?: Array<{ text?: string }> };
+    }>;
+  };
+  const parts = data.candidates?.[0]?.content?.parts ?? [];
+  return parts
+    .map((p) => p.text ?? "")
+    .join("")
+    .trim();
+}
